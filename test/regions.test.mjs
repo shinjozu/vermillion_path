@@ -1,0 +1,19 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createCharacter,act,encode,decode,validateSave,restCost} from '../public/engine.mjs';
+import {continueJourney} from '../public/sandbox.mjs';
+import {currentRegion} from '../public/regions.mjs';
+import {styles,prepareCombat} from '../public/combat.mjs';
+function road(){return continueJourney(act(createCharacter({seed:'regional-test'}),'end:wander'));}
+function go(s,place){return s.location===place?s:act(s,'travel:'+place);}
+for(const path of ['relief','patrol'])test(path+' project completes, persists, refuses duplicate payment and permits policy changes',()=>{
+ let s=go(road(),'market');s=act(s,'region:accept');s=act(s,'region:'+path);
+ assert.throws(()=>act(s,'region:report'));s=go(s,path==='relief'?'clinic':'gate');s=act(s,'region:work');s=decode(encode(s));s=go(s,'market');const coins=s.coins;s=act(s,'region:report');assert.equal(s.coins,coins+7);assert.equal(currentRegion(s).policy,path);assert.throws(()=>act(s,'region:report'));const name=currentRegion(s).name;s=act(s,'region:policy');assert.notEqual(currentRegion(s).policy,path);s=act(s,'road');assert.equal(s.regions.districts.find(r=>r.name===name).completed,1);validateSave(s);
+});
+test('regional costs are transactional and scarcity raises the displayed rest price',()=>{let s=go(road(),'market');s=act(s,'region:accept');s.coins=0;const before=structuredClone(s);assert.throws(()=>act(s,'region:relief'));assert.deepEqual(s,before);currentRegion(s).supplies=10;assert.equal(restCost(s),3);});
+test('long campaigns retain bounded regional history and save after maximum-length input',()=>{let s=road();for(let i=0;i<600;i++){s=act(s,'improvise:labor',{text:'x'.repeat(1000)});if(i%20===0)s=act(s,'road');if(i%50===0)s=decode(encode(s));}assert.equal(s.regions.tick,Math.floor(s.time/12));for(const r of s.regions.districts){assert.ok(r.history.length<=12);assert.ok(r.supplies>=0&&r.supplies<=100);assert.ok(r.safety>=0&&r.safety<=100);}assert.ok(encode(s).length<1000000);validateSave(s);});
+test('v3 saves migrate without resetting character progress or procedural identities',()=>{const original=road(),old=structuredClone(original);delete old.regions;old.version=3;const payload=JSON.stringify(old);let h=2166136261;for(let i=0;i<payload.length;i++)h=Math.imul(h^payload.charCodeAt(i),16777619);const migrated=decode(JSON.stringify({format:'vermilion-path',version:3,payload,checksum:(h>>>0).toString(16)}));assert.equal(migrated.version,5);for(const k of ['world','stats','techniques','coins','chapter','time'])assert.deepEqual(migrated[k],original[k]);});
+test('each enemy style follows its own advertised pattern through reload and retreat',()=>{for(const [id,style]of Object.entries(styles)){let s=createCharacter({seed:id});s=act(s,'improvise:challenge');prepareCombat(s.combat,id);for(let i=0;i<3;i++){const turn=s.combat.turn;s=act(s,'guard');assert.equal(s.combat.intent,style.pattern[(turn+1)%style.pattern.length]);s=decode(encode(s));}s=act(s,'flee');assert.equal(s.combat,null);assert.ok(!s.flags.ledger);assert.ok(s.journal.some(e=>e.text.includes('road opponent. No victory')));}});
+test('long seeds normalize consistently and supply capacity cannot break saving',()=>{let s=createCharacter({seed:'a'.repeat(90)});s.inventory.herb=100;s=act(s,'explore');assert.equal(s.inventory.herb,100);decode(encode(s));});
+
+test('prosperity affects wages and absent districts keep evolving',()=>{let a=road(),b=structuredClone(a);currentRegion(a).prosperity=59;currentRegion(b).prosperity=60;a=act(a,'improvise:labor');b=act(b,'improvise:labor');assert.equal(b.coins,a.coins+1);const name=currentRegion(b).name;b=act(b,'road');for(let i=0;i<6;i++)b=act(b,'improvise:labor');assert.ok(b.regions.districts.find(r=>r.name===name).history.length);});
